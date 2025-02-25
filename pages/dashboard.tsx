@@ -148,11 +148,33 @@ export default function DashboardPage() {
           )
         );
         setLoading(false);
-      } catch (error) {
+      } catch (error: any) {
         console.error("Swap failed:", error);
-        setStatus(
-          <div style={{ textAlign: "center" }}>Oops! Something went wrong</div>
-        );
+        if (error.message && error.message.includes("NoLiquidity")) {
+          setStatus(
+            <div style={{ textAlign: "center" }}>
+              Sorry, there is no liquidity available for this swap pair. Please try a different token pair.
+            </div>
+          );
+        } else if (error.message && error.message.includes("COWProtocolUnsupported")) {
+          setStatus(
+            <div style={{ textAlign: "center" }}>
+              Sorry, COW Protocol doesn't support swaps on the Sepolia testnet. 
+              Please try using a different network like Ethereum Mainnet.
+            </div>
+          );
+        } else if (error.message && (error.message.includes("404") || error.message.includes("Not Found"))) {
+          setStatus(
+            <div style={{ textAlign: "center" }}>
+              Sorry, COW Protocol API endpoint not found. 
+              The Sepolia testnet is not supported by COW Protocol.
+            </div>
+          );
+        } else {
+          setStatus(
+            <div style={{ textAlign: "center" }}>Oops! Something went wrong</div>
+          );
+        }
         setShowStatusPopup(true);
         setLoading(false);
       }
@@ -199,7 +221,7 @@ export default function DashboardPage() {
                 <textarea
                   value={intentValue}
                   onChange={(e) => setIntentValue(e.target.value)}
-                  placeholder="Enter your heart's desire. Currently supports transfers and swaps."
+                  placeholder="Welcome to Brinco, a remittance agent that supports transfers and swaps."
                   className="text-sm py-2 px-4 bg-white border-[#808080] w-full h-24 resize-none my-8 rounded-md shadow-md"
                 />
                 <button

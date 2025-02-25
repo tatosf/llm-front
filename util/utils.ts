@@ -35,13 +35,33 @@ import {
 } from "@cowprotocol/cow-sdk";
 type Address = string;
 
+// Add Uniswap V2 constants
+const UNISWAP_V2_ROUTER: { [key: number]: string } = {
+  1: "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D", // mainnet
+  11155111: "0xC532a74256D3Db42D0Bf7a0400fEFDbad7694008", // sepolia
+};
+
+const UNISWAP_V2_FACTORY: { [key: number]: string } = {
+  1: "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f", // mainnet
+  11155111: "0x7E0987E5b3a30e3f2828572Bb659A548460a3003", // sepolia
+};
+
+// Uniswap V2 Router ABI
+const UNISWAP_V2_ROUTER_ABI = [
+  "function getAmountsOut(uint amountIn, address[] memory path) public view returns (uint[] memory amounts)",
+  "function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)",
+  "function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)",
+  "function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable returns (uint[] memory amounts)",
+];
+
 const decimalConverter: { [key: number]: { [key: string]: number } } = {
   11155111: {
     // sepolia
-    "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238": 6, // testnet USDC
+    "0x94a9d9ac8a22534e3faca9f4e7f2e2cf85d5e4c8": 6, // swap testnet USDC (cowswap liquidity address)
+    "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238": 6, // transfer testnet USDC
     "0x08210F9170F89Ab7658F0B5E3fF39b0E03C594D4": 6, // testnet EURC
     "0xB4F1737Af37711e9A5890D9510c9bB60e170CB0D": 18, // cowswap test DAI
-    "0xbe72E441BF55620febc26715db68d3494213D8Cb": 18, // cowswap test USDC
+    "0xbe72E441BF55620febc26715db68d3494213D8Cb": 18, // cowswap test USDC (if applicable)
   },
   1: {
     // mainnet
@@ -242,29 +262,38 @@ export async function sendOrder(
   );
 
   const orderBookApi = new OrderBookApi({ chainId: chainId });
-  const { quote, ...quoteParams } = await orderBookApi.getQuote(quoteRequest);
+  try {
+    const { quote, ...quoteParams } = await orderBookApi.getQuote(quoteRequest);
 
-  quote.feeAmount = "0";
-  quote.sellAmount = amountDecimals;
-  quote.buyAmount = Math.round(
-    Number(quote.buyAmount) * (1 - slippage)
-  ).toString();
+    quote.feeAmount = "0";
+    quote.sellAmount = amountDecimals;
+    quote.buyAmount = Math.round(
+      Number(quote.buyAmount) * (1 - slippage)
+    ).toString();
 
-  const orderSigningResult = await OrderSigningUtils.signOrder(
-    { ...quote, receiver: fromAddress },
-    chainId,
-    signer
-  );
+    const orderSigningResult = await OrderSigningUtils.signOrder(
+      { ...quote, receiver: fromAddress },
+      chainId,
+      signer
+    );
 
-  const orderObj = {
-    ...quote,
-    ...orderSigningResult,
-    signingScheme: SigningScheme.EIP712,
-    quoteId: quoteParams.id,
-    from: fromAddress,
-  };
+    const orderObj = {
+      ...quote,
+      ...orderSigningResult,
+      signingScheme: SigningScheme.EIP712,
+      quoteId: quoteParams.id,
+      from: fromAddress,
+    };
 
-  return await orderBookApi.sendOrder(orderObj);
+    return await orderBookApi.sendOrder(orderObj);
+  } catch (error: any) {
+    // Properly propagate NoLiquidity error with appropriate message
+    if (error.body && error.body.errorType === "NoLiquidity") {
+      throw new Error(`NoLiquidity: ${error.body.description || "No route found between these tokens"}`);
+    }
+    // Rethrow the original error
+    throw error;
+  }
 }
 
 export async function waitForOrderStatus(
@@ -285,4 +314,101 @@ export async function waitForOrderStatus(
     orderStatus = enrichedOrder.status;
   }
   return orderStatus;
+}
+
+/**
+ * Performs a token swap using Uniswap V2
+ * @param wallets Connected wallets
+ * @param chain Chain to use for the swap
+ * @param fromAsset Token address to swap from
+ * @param toAsset Token address to swap to
+ * @param amount Amount to swap in human readable format
+ * @returns The transaction hash
+ */
+export async function uniswapV2Swap(
+  wallets: ConnectedWallet[],
+  chain: string,
+  fromAsset: string,
+  toAsset: string,
+  amount: string
+): Promise<string> {
+  if (!wallets[0]) {
+    throw new Error("No wallet is connected!");
+  }
+
+  const chainId = supportedChains[chain];
+  if (chainId === undefined) {
+    throw new Error(`Unsupported chain: ${chain}`);
+  }
+
+  // Get router contract address for this chain
+  const routerAddress = UNISWAP_V2_ROUTER[chainId];
+  if (!routerAddress) {
+    throw new Error(`No Uniswap Router found for chain: ${chain}`);
+  }
+
+  await wallets[0].switchChain(chainId);
+  const provider = await wallets[0].getEthersProvider();
+  const signer = provider.getSigner();
+  const fromAddress = await signer.getAddress();
+
+  const chainDecimals = decimalConverter[chainId];
+  if (chainDecimals === undefined) {
+    throw new Error(`No decimals for chain: ${chain}`);
+  }
+
+  const decimals = chainDecimals[fromAsset];
+  if (decimals === undefined) {
+    throw new Error(`No decimals for token: ${fromAsset}`);
+  }
+
+  // Parse the amount with correct decimals
+  const amountDecimals = ethers.utils.parseUnits(amount, decimals);
+  
+  // Initialize the Uniswap Router contract
+  const uniswapRouter = new ethers.Contract(
+    routerAddress,
+    UNISWAP_V2_ROUTER_ABI,
+    signer
+  );
+
+  // Create the token contract to approve spending
+  const tokenContract = new ethers.Contract(
+    fromAsset,
+    ERC20_ABI,
+    signer
+  );
+  
+  // Check and set allowance
+  await checkAllowanceAndApproveIfNecessary(
+    routerAddress,
+    fromAsset,
+    signer,
+    amountDecimals
+  );
+
+  // Set up the swap parameters
+  const path = [fromAsset, toAsset];
+  const deadline = Math.floor(Date.now() / 1000) + 60 * 20; // 20 minutes from now
+  const slippage = 0.05; // 5% slippage
+
+  // Get the expected output amount
+  const amounts = await uniswapRouter.getAmountsOut(amountDecimals, path);
+  const amountOutMin = amounts[1].mul(ethers.BigNumber.from(100 - Math.floor(slippage * 100))).div(ethers.BigNumber.from(100));
+
+  console.log(`Swapping ${amount} of ${fromAsset} to ${toAsset}`);
+  console.log(`Expected output amount: ${ethers.utils.formatUnits(amounts[1], chainDecimals[toAsset] || 18)}`);
+  console.log(`Minimum output amount: ${ethers.utils.formatUnits(amountOutMin, chainDecimals[toAsset] || 18)}`);
+  
+  // Execute the swap transaction
+  const tx = await uniswapRouter.swapExactTokensForTokens(
+    amountDecimals,
+    amountOutMin,
+    path,
+    fromAddress,
+    deadline
+  );
+
+  console.log(`Swap transaction sent! Hash: ${tx.hash}`);
+  return tx.hash;
 }
