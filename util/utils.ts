@@ -54,10 +54,17 @@ const UNISWAP_V2_ROUTER_ABI = [
   "function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable returns (uint[] memory amounts)",
 ];
 
+// Add Uniswap V2 Factory ABI
+const UNISWAP_V2_FACTORY_ABI = [
+  "function getPair(address tokenA, address tokenB) external view returns (address pair)",
+  "function createPair(address tokenA, address tokenB) external returns (address pair)"
+];
+
 const decimalConverter: { [key: number]: { [key: string]: number } } = {
   11155111: {
     // sepolia
-    "0x94a9d9ac8a22534e3faca9f4e7f2e2cf85d5e4c8": 6, // swap testnet USDC (cowswap liquidity address)
+    "0x7b79995e5f793A07Bc00c21412e50Ecae098E7f9": 18, // Sepolia WETH
+    "0x94a9d9ac8a22534e3faca9f4e7f2e2cf85d5e4c8": 6, // cowswap testnet USDC (cowswap liquidity address)
     "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238": 6, // transfer testnet USDC
     "0x08210F9170F89Ab7658F0B5E3fF39b0E03C594D4": 6, // testnet EURC
     "0xB4F1737Af37711e9A5890D9510c9bB60e170CB0D": 18, // cowswap test DAI
@@ -68,6 +75,7 @@ const decimalConverter: { [key: number]: { [key: string]: number } } = {
     "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2": 18, // WETH
     "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48": 6, // USDC
     "0x6B175474E89094C44Da98b954EedeAC495271d0F": 18, // DAI
+    "0x1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c": 6, // EURC
   },
 };
 
@@ -317,6 +325,35 @@ export async function waitForOrderStatus(
 }
 
 /**
+ * Checks if a liquidity pool exists between two tokens
+ * @param provider Ethers provider
+ * @param factoryAddress Uniswap V2 Factory address
+ * @param tokenA First token address
+ * @param tokenB Second token address
+ * @returns True if a pool exists, false otherwise
+ */
+async function checkLiquidityPoolExists(
+  provider: ethers.providers.Provider,
+  factoryAddress: string,
+  tokenA: string,
+  tokenB: string
+): Promise<boolean> {
+  try {
+    const factory = new ethers.Contract(
+      factoryAddress,
+      UNISWAP_V2_FACTORY_ABI,
+      provider
+    );
+    
+    const pairAddress = await factory.getPair(tokenA, tokenB);
+    return pairAddress !== ethers.constants.AddressZero;
+  } catch (error) {
+    console.error("Error checking liquidity pool:", error);
+    return false;
+  }
+}
+
+/**
  * Performs a token swap using Uniswap V2
  * @param wallets Connected wallets
  * @param chain Chain to use for the swap
@@ -345,6 +382,12 @@ export async function uniswapV2Swap(
   const routerAddress = UNISWAP_V2_ROUTER[chainId];
   if (!routerAddress) {
     throw new Error(`No Uniswap Router found for chain: ${chain}`);
+  }
+  
+  // Get factory address for this chain
+  const factoryAddress = UNISWAP_V2_FACTORY[chainId];
+  if (!factoryAddress) {
+    throw new Error(`No Uniswap Factory found for chain: ${chain}`);
   }
 
   await wallets[0].switchChain(chainId);
@@ -387,28 +430,161 @@ export async function uniswapV2Swap(
     amountDecimals
   );
 
-  // Set up the swap parameters
-  const path = [fromAsset, toAsset];
+  // Define WETH address for the chain
+  const WETH_ADDRESS = chainId === 11155111 
+    ? "0x7b79995e5f793A07Bc00c21412e50Ecae098E7f9" // Sepolia WETH
+    : "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"; // Mainnet WETH
+    
+  // Check if direct pool exists
+  const directPoolExists = await checkLiquidityPoolExists(
+    provider,
+    factoryAddress,
+    fromAsset,
+    toAsset
+  );
+  
+  console.log(`Direct pool between tokens exists: ${directPoolExists}`);
+  
+  // Check if pools with WETH exist
+  const fromWethPoolExists = await checkLiquidityPoolExists(
+    provider,
+    factoryAddress,
+    fromAsset,
+    WETH_ADDRESS
+  );
+  
+  const toWethPoolExists = await checkLiquidityPoolExists(
+    provider,
+    factoryAddress,
+    WETH_ADDRESS,
+    toAsset
+  );
+  
+  console.log(`Pool from asset to WETH exists: ${fromWethPoolExists}`);
+  console.log(`Pool from WETH to target asset exists: ${toWethPoolExists}`);
+  
+  // Determine the best path
+  let path: string[];
+  
+  if (directPoolExists) {
+    path = [fromAsset, toAsset];
+    console.log("Using direct swap path");
+  } else if (fromWethPoolExists && toWethPoolExists) {
+    path = [fromAsset, WETH_ADDRESS, toAsset];
+    console.log("Using WETH as intermediary");
+  } else {
+    console.log("No viable swap path found. Attempting to create necessary pools...");
+    
+    try {
+      // Try to create direct pool first
+      if (!directPoolExists) {
+        try {
+          await createLiquidityPoolIfNeeded(signer, factoryAddress, fromAsset, toAsset);
+          path = [fromAsset, toAsset];
+          console.log("Created direct pool and using direct swap path");
+        } catch (error) {
+          console.error("Failed to create direct pool:", error);
+          
+          // If direct pool creation fails, try creating pools with WETH
+          if (!fromWethPoolExists) {
+            await createLiquidityPoolIfNeeded(signer, factoryAddress, fromAsset, WETH_ADDRESS);
+          }
+          
+          if (!toWethPoolExists) {
+            await createLiquidityPoolIfNeeded(signer, factoryAddress, WETH_ADDRESS, toAsset);
+          }
+          
+          path = [fromAsset, WETH_ADDRESS, toAsset];
+          console.log("Created WETH intermediary pools and using WETH as intermediary");
+        }
+      } else {
+        // This should never happen, but initialize path to avoid linter error
+        path = [fromAsset, WETH_ADDRESS, toAsset];
+      }
+    } catch (error) {
+      console.error("Failed to create necessary liquidity pools:", error);
+      throw new Error("No viable swap path found and failed to create necessary liquidity pools. There is no liquidity for this pair.");
+    }
+  }
+
+  // Set up the swap parameters with WETH as an intermediary
   const deadline = Math.floor(Date.now() / 1000) + 60 * 20; // 20 minutes from now
   const slippage = 0.05; // 5% slippage
 
-  // Get the expected output amount
-  const amounts = await uniswapRouter.getAmountsOut(amountDecimals, path);
-  const amountOutMin = amounts[1].mul(ethers.BigNumber.from(100 - Math.floor(slippage * 100))).div(ethers.BigNumber.from(100));
+  try {
+    // Get the expected output amount
+    const amounts = await uniswapRouter.getAmountsOut(amountDecimals, path);
+    const outputIndex = path.length - 1;
+    const amountOutMin = amounts[outputIndex].mul(ethers.BigNumber.from(100 - Math.floor(slippage * 100))).div(ethers.BigNumber.from(100));
 
-  console.log(`Swapping ${amount} of ${fromAsset} to ${toAsset}`);
-  console.log(`Expected output amount: ${ethers.utils.formatUnits(amounts[1], chainDecimals[toAsset] || 18)}`);
-  console.log(`Minimum output amount: ${ethers.utils.formatUnits(amountOutMin, chainDecimals[toAsset] || 18)}`);
-  
-  // Execute the swap transaction
-  const tx = await uniswapRouter.swapExactTokensForTokens(
-    amountDecimals,
-    amountOutMin,
-    path,
-    fromAddress,
-    deadline
-  );
+    console.log(`Swapping ${amount} of ${fromAsset} to ${toAsset}`);
+    console.log(`Expected output amount: ${ethers.utils.formatUnits(amounts[outputIndex], chainDecimals[toAsset] || 18)}`);
+    console.log(`Minimum output amount: ${ethers.utils.formatUnits(amountOutMin, chainDecimals[toAsset] || 18)}`);
+    
+    // Execute the swap transaction
+    const tx = await uniswapRouter.swapExactTokensForTokens(
+      amountDecimals,
+      amountOutMin,
+      path,
+      fromAddress,
+      deadline,
+      { gasLimit: 500000 } // Add explicit gas limit to avoid underestimation
+    );
 
-  console.log(`Swap transaction sent! Hash: ${tx.hash}`);
-  return tx.hash;
+    console.log(`Swap transaction sent! Hash: ${tx.hash}`);
+    return tx.hash;
+  } catch (error: any) {
+    console.error("Uniswap swap error:", error);
+    
+    // Check if it's a liquidity issue
+    if (error.message && error.message.includes("INSUFFICIENT_OUTPUT_AMOUNT")) {
+      throw new Error("Insufficient liquidity for this swap pair");
+    }
+    
+    // If we get here, something else went wrong
+    throw new Error(`Swap failed: ${error.message}`);
+  }
+}
+
+/**
+ * Creates a liquidity pool between two tokens if it doesn't exist
+ * @param signer Ethers signer
+ * @param factoryAddress Uniswap V2 Factory address
+ * @param tokenA First token address
+ * @param tokenB Second token address
+ * @returns The pair address
+ */
+async function createLiquidityPoolIfNeeded(
+  signer: ethers.providers.JsonRpcSigner,
+  factoryAddress: string,
+  tokenA: string,
+  tokenB: string
+): Promise<string> {
+  try {
+    const factory = new ethers.Contract(
+      factoryAddress,
+      UNISWAP_V2_FACTORY_ABI,
+      signer
+    );
+    
+    // Check if pair already exists
+    const pairAddress = await factory.getPair(tokenA, tokenB);
+    if (pairAddress !== ethers.constants.AddressZero) {
+      console.log(`Pair already exists at ${pairAddress}`);
+      return pairAddress;
+    }
+    
+    // Create the pair
+    console.log(`Creating pair between ${tokenA} and ${tokenB}`);
+    const tx = await factory.createPair(tokenA, tokenB);
+    await tx.wait();
+    
+    // Get the new pair address
+    const newPairAddress = await factory.getPair(tokenA, tokenB);
+    console.log(`Created new pair at ${newPairAddress}`);
+    return newPairAddress;
+  } catch (error) {
+    console.error("Error creating liquidity pool:", error);
+    throw new Error("Failed to create liquidity pool");
+  }
 }

@@ -32,6 +32,7 @@ import {
   sendTransaction,
   sendOrder,
   waitForOrderStatus,
+  uniswapV2Swap,
 } from "../util/utils";
 import { ethers } from "ethers";
 import { OrderStatus } from "@cowprotocol/cow-sdk";
@@ -125,35 +126,97 @@ export default function DashboardPage() {
     } else if (data.transaction_type === "swap") {
       const { chain, amount, fromAsset, toAsset } = data.response;
       try {
-        const orderId = await sendOrder(
-          wallets,
-          chain,
-          fromAsset,
-          toAsset,
-          amount.toString()
-        );
-        setStatus(
-          <div style={{ textAlign: "center" }}>
-            Order sent! Your order is being filled ⌛
-          </div>
-        );
-        setShowStatusPopup(true);
+        // Use Uniswap V2 for Sepolia swaps
+        if (chain === "sepolia") {
+          const txHash = await uniswapV2Swap(
+            wallets,
+            chain,
+            fromAsset,
+            toAsset,
+            amount.toString()
+          );
+          
+          setStatus(
+            <div style={{ textAlign: "center" }}>
+              Swap transaction sent! Awaiting Confirmation ⌛<br />
+              <br />
+              View on Explorer:{" "}
+              <a
+                className="text-blue-500 hover:text-blue-700"
+                href={`${chainToUrl[chain]}${txHash}`}
+              >
+                {abbreviateTransactionHash(txHash)}
+              </a>
+            </div>
+          );
+          setShowStatusPopup(true);
+          
+          // Wait for transaction confirmation
+          const provider = await wallets[0]?.getEthersProvider();
+          if (!provider) {
+            throw new Error("No wallet provider available");
+          }
+          const receipt = await provider.waitForTransaction(txHash);
+          
+          setStatus(
+            <div style={{ textAlign: "center" }}>
+              Swap confirmed! 🎉
+              <br />
+              <br />
+              View on Explorer:{" "}
+              <a
+                className="text-blue-500 hover:text-blue-700"
+                href={`${chainToUrl[chain]}${receipt.transactionHash}`}
+              >
+                {abbreviateTransactionHash(receipt.transactionHash)}
+              </a>
+            </div>
+          );
+          setLoading(false);
+        } else {
+          // Use COW Protocol for other chains
+          const orderId = await sendOrder(
+            wallets,
+            chain,
+            fromAsset,
+            toAsset,
+            amount.toString()
+          );
+          setStatus(
+            <div style={{ textAlign: "center" }}>
+              Order sent! Your order is being filled ⌛
+            </div>
+          );
+          setShowStatusPopup(true);
 
-        const orderStatus = await waitForOrderStatus(orderId, chain);
-        setStatus(
-          orderStatus === OrderStatus.FULFILLED ? (
-            <div>Order filled! 🎉</div>
-          ) : (
-            <div>Uh oh! Something went wrong! Order status: ${orderStatus}</div>
-          )
-        );
-        setLoading(false);
+          const orderStatus = await waitForOrderStatus(orderId, chain);
+          setStatus(
+            orderStatus === OrderStatus.FULFILLED ? (
+              <div>Order filled! 🎉</div>
+            ) : (
+              <div>Uh oh! Something went wrong! Order status: ${orderStatus}</div>
+            )
+          );
+          setLoading(false);
+        }
       } catch (error: any) {
         console.error("Swap failed:", error);
         if (error.message && error.message.includes("NoLiquidity")) {
           setStatus(
             <div style={{ textAlign: "center" }}>
               Sorry, there is no liquidity available for this swap pair. Please try a different token pair.
+            </div>
+          );
+        } else if (error.message && error.message.includes("Insufficient liquidity")) {
+          setStatus(
+            <div style={{ textAlign: "center" }}>
+              Sorry, there is insufficient liquidity for this swap pair on Uniswap. Please try a different token pair.
+            </div>
+          );
+        } else if (error.message && error.message.includes("No liquidity available")) {
+          setStatus(
+            <div style={{ textAlign: "center" }}>
+              Sorry, there is no liquidity available for this swap pair on Uniswap V2. Please try a different token pair.
             </div>
           );
         } else if (error.message && error.message.includes("COWProtocolUnsupported")) {
@@ -170,9 +233,19 @@ export default function DashboardPage() {
               The Sepolia testnet is not supported by COW Protocol.
             </div>
           );
+        } else if (error.message && error.message.includes("user rejected transaction")) {
+          setStatus(
+            <div style={{ textAlign: "center" }}>
+              Transaction was rejected in your wallet.
+            </div>
+          );
         } else {
           setStatus(
-            <div style={{ textAlign: "center" }}>Oops! Something went wrong</div>
+            <div style={{ textAlign: "center" }}>
+              Oops! Something went wrong: {error.message}
+              <br /><br />
+              This may be due to insufficient liquidity between these tokens on Sepolia testnet.
+            </div>
           );
         }
         setShowStatusPopup(true);
