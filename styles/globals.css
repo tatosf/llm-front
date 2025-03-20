@@ -25,16 +25,87 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  /* New color palette for dark mode design */
+  --color-primary: #3b82f6;
+  --color-primary-hover: #2563eb;
+  --color-secondary: #1e1e1e;
+  --color-background: #121212;
+  --color-card: #1e1e1e;
+  --color-card-header: #181818;
+  --color-muted: #252525;
+  --color-border: #333333;
+  --color-text: #e2e2e2;
+  --color-text-secondary: #a1a1aa;
+}
 
-@layer base {
-  /* normal */
-  body {
-    font-family: "Courier New", monospace;
-    font-weight: 400;
-  }
+html,
+body {
+  padding: 0;
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Oxygen,
+    Ubuntu, Cantarell, Fira Sans, Droid Sans, Helvetica Neue, sans-serif;
+  background-color: var(--color-background);
+  color: var(--color-text);
+}
 
-  /* semibold */
-  strong {
-    font-weight: 700;
-  }
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Define Baskervville font class */
+.baskervville-regular {
+  font-family: "Baskervville", serif;
+  font-weight: 400;
+  font-style: normal;
+}
+
+/* Button Styles */
+.btn-primary {
+  @apply bg-primary hover:bg-primary/80 text-white px-4 py-2 rounded-md transition duration-200 ease-in-out flex items-center justify-center;
+}
+
+.btn-secondary {
+  @apply bg-secondary hover:bg-secondary/80 text-gray-200 px-4 py-2 rounded-md transition duration-200 ease-in-out;
+}
+
+/* Card component */
+.card {
+  @apply bg-[#1e1e1e] p-6 rounded-xl shadow-xl border border-gray-800;
+}
+
+/* Window dots */
+.window-dot {
+  @apply w-3 h-3 rounded-full;
+}
+
+.window-dot-red {
+  @apply bg-[#ff5f57];
+}
+
+.window-dot-yellow {
+  @apply bg-[#febc2e];
+}
+
+.window-dot-green {
+  @apply bg-[#28c840];
+}
+
+/* Custom transaction history */
+.transaction-history-header {
+  @apply flex justify-between items-center w-full p-4 bg-[#202020] hover:bg-[#252525] text-left;
+}
+
+.transaction-item {
+  @apply p-4 hover:bg-[#202020] flex justify-between;
+}
+
+/* Custom textarea */
+.custom-textarea {
+  @apply min-h-[120px] bg-[#252525] border-gray-700 focus:border-primary text-gray-300 placeholder:text-gray-500 w-full p-4 rounded-md border resize-none focus:outline-none focus:ring-1 focus:ring-primary transition;
 }

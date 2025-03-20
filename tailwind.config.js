@@ -25,19 +25,52 @@ const defaultTheme = require('tailwindcss/defaultTheme');
 
 /** @type {import('tailwindcss').Config} */
 module.exports = {
-  content: ['./pages/**/*.{js,ts,jsx,tsx}', './components/**/*.{js,ts,jsx,tsx}'],
+  content: [
+    './pages/**/*.{js,ts,jsx,tsx}',
+    './components/**/*.{js,ts,jsx,tsx}'
+  ],
   theme: {
     extend: {
       fontFamily: {
         sans: ['Adelle Sans', ...defaultTheme.fontFamily.sans],
+        'mono': ['Menlo', 'Monaco', 'Consolas', 'monospace'],
       },
       colors: {
-        'privy-navy': '#160B45',
-        'privy-light-blue': '#EFF1FD',
-        'privy-blueish': '#D4D9FC',
-        'privy-pink': '#FF8271',
+        primary: {
+          DEFAULT: "#3b82f6",
+          hover: "#2563eb"
+        },
+        secondary: {
+          DEFAULT: "#1e1e1e",
+          foreground: "#e2e2e2",
+        },
+        background: "#121212",
+        card: "#1e1e1e",
+        "card-header": "#181818",
+        muted: {
+          DEFAULT: "#252525",
+          foreground: "#a1a1aa",
+        },
+        border: "#333333",
+        text: {
+          DEFAULT: "#e2e2e2",
+          secondary: "#a1a1aa",
+        },
+        status: {
+          success: "#28c840",
+          pending: "#febc2e",
+          error: "#ff5f57",
+        }
+      },
+      borderRadius: {
+        'xl': '0.75rem',
+      },
+      transitionDuration: {
+        '200': '200ms',
       },
     },
   },
-  plugins: [require('@tailwindcss/forms')],
+  plugins: [
+    require('@tailwindcss/forms'),
+  ],
 };

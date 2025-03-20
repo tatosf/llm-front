@@ -91,10 +91,48 @@ const supportedChains: { [key: string]: number } = {
   base: 8453,
 };
 
-// Free mainnet RPC, used for ENS resolution
-const mainnetProvider = new ethers.providers.JsonRpcProvider(
-  "https://rpc.ankr.com/eth"
-);
+const mainnetRpcUrls = [
+  "https://eth.llamarpc.com",
+  "https://ethereum.publicnode.com",
+  "https://1rpc.io/eth",
+  "https://rpc.ankr.com/eth", 
+];
+
+// Create a provider with fallback mechanism
+const createMainnetProvider = (): ethers.providers.Provider => {
+  // Try JsonRpcProviders first
+  for (const url of mainnetRpcUrls) {
+    try {
+      return new ethers.providers.JsonRpcProvider(url);
+    } catch (e) {
+      console.warn(`Failed to connect to RPC ${url}`, e);
+    }
+  }
+  
+  // If all else fails, use Ethers' built-in default provider which has its own fallbacks
+  console.warn("All RPC connections failed, using default provider");
+  return ethers.getDefaultProvider('mainnet');
+};
+
+// Create the provider once
+const mainnetProvider = createMainnetProvider();
+
+const resolveNameOrAddress = async (addressOrENS: string): Promise<string> => {
+  if (ethers.utils.isAddress(addressOrENS)) {
+    return addressOrENS;
+  }
+  
+  try {
+    const resolved = await mainnetProvider.resolveName(addressOrENS);
+    if (resolved) {
+      return resolved;
+    }
+    throw new Error("Could not resolve ENS name");
+  } catch (error) {
+    console.error("ENS resolution failed:", error);
+    throw new Error(`Could not resolve name '${addressOrENS}'. Please use a valid ENS name or Ethereum address.`);
+  }
+};
 
 const ERC20_ABI = [
   // Read-Only Functions
@@ -201,16 +239,31 @@ export async function sendTransaction(
   const amount_decimals = ethers.utils.parseUnits(amount, decimals);
   const contractSigner = contract.connect(signer);
 
-  let receiverAddress = receiver;
-
-  // check if ENS
-  if (!ethers.utils.isAddress(receiver)) {
-    const resolvedName = await mainnetProvider.resolveName(receiver);
-    if (resolvedName === null) {
-      throw new Error("Could not resolve ENS name");
+  let receiverAddress: string;
+  try {
+    receiverAddress = await resolveNameOrAddress(receiver);
+  } catch (error) {
+    // Try one more time with direct wallet provider if possible
+    if (!ethers.utils.isAddress(receiver) && chain === 'mainnet') {
+      try {
+        // If we're on mainnet, try to resolve directly with the wallet's provider
+        console.log("Trying to resolve ENS with wallet provider");
+        const resolved = await provider.resolveName(receiver);
+        if (resolved) {
+          receiverAddress = resolved;
+        } else {
+          throw error; // Re-throw if still null
+        }
+      } catch (secondError) {
+        // If both resolution attempts fail, throw a user-friendly error
+        console.error("Both ENS resolution attempts failed:", secondError);
+        throw new Error(`Could not resolve name '${receiver}'. Please use a valid ENS name or Ethereum address.`);
+      }
+    } else {
+      throw error;
     }
-    receiverAddress = resolvedName;
   }
+
   console.log("Sending transaction...");
   const tx = await contractSigner.transfer(receiverAddress, amount_decimals);
   return tx;
@@ -587,4 +640,82 @@ async function createLiquidityPoolIfNeeded(
     console.error("Error creating liquidity pool:", error);
     throw new Error("Failed to create liquidity pool");
   }
+}
+
+// MoonPay URLs
+const MOONPAY_BASE_URL = "https://buy.moonpay.com";
+const MOONPAY_API_KEY = "pk_test_1234567890"; // Replace with your actual publishable API key
+
+/**
+ * Processes a fiat-to-crypto purchase request by creating a MoonPay widget URL
+ * @param wallets Connected wallets
+ * @param buyAmount Amount of crypto to buy in USD
+ * @param cryptoAsset Token contract address to purchase
+ * @param chain Blockchain network for the purchased crypto
+ * @param paymentMethod Payment method to use (bank_account, credit_card, debit_card)
+ * @returns A URL to the MoonPay widget pre-configured with the user's details
+ */
+export async function processBuyRequest(
+  wallets: ConnectedWallet[],
+  buyAmount: string,
+  cryptoAsset: string,
+  chain: string,
+  paymentMethod: string
+): Promise<{ moonpayUrl: string }> {
+  if (!wallets[0]) {
+    throw new Error("No wallet is connected!");
+  }
+
+  const chainId = supportedChains[chain];
+  if (chainId === undefined) {
+    throw new Error(`Unsupported chain: ${chain}`);
+  }
+
+  // Switch to the target chain
+  await wallets[0].switchChain(chainId);
+  const walletAddress = await wallets[0].address;
+
+  // Get the currency code for MoonPay based on the token and chain
+  let currencyCode = "usdc";
+  if (chain === "mainnet") {
+    currencyCode = "usdc"; // Ethereum mainnet USDC
+  } else if (chain === "base") {
+    currencyCode = "usdc_base"; // Base USDC
+  } else if (chain === "sepolia") {
+    currencyCode = "usdc_ethereum_sepolia"; // Sepolia testnet USDC
+  }
+
+  // Map our payment method to MoonPay's payment method parameter
+  let moonpayPaymentMethod = "";
+  if (paymentMethod === "bank_account") {
+    // US users typically use ACH
+    moonpayPaymentMethod = "sepa_bank_transfer";
+  } else if (paymentMethod === "credit_card") {
+    moonpayPaymentMethod = "credit_debit_card";
+  } else if (paymentMethod === "debit_card") {
+    moonpayPaymentMethod = "credit_debit_card";
+  }
+
+  // Build the MoonPay URL with all required parameters
+  const params = new URLSearchParams({
+    apiKey: MOONPAY_API_KEY,
+    currencyCode: currencyCode,
+    walletAddress: walletAddress,
+    baseCurrencyCode: "usd",
+    baseCurrencyAmount: buyAmount,
+    showWalletAddressForm: "false",
+    redirectURL: window.location.origin, // Redirect back to our app
+  });
+
+  // Add payment method if specified
+  if (moonpayPaymentMethod) {
+    params.append("paymentMethod", moonpayPaymentMethod);
+  }
+
+  // Create the final URL
+  const moonpayUrl = `${MOONPAY_BASE_URL}?${params.toString()}`;
+  
+  return {
+    moonpayUrl: moonpayUrl
+  };
 }
